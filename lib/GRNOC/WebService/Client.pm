@@ -26,6 +26,7 @@ use HTTP::Request::Common;
 use Fcntl qw(:flock);
 use List::Util;
 use Storable 'dclone';
+use XML::LibXML;
 
 $HTTP::Request::Common::DYNAMIC_FILE_UPLOAD = 1;
 
@@ -236,7 +237,7 @@ sub _redirect_timing {
 
     return sub {
         my ($response, $ua, $h) = @_;
-        
+
         if ($self->{'timing'} && $response->header("location")){
             $self->_do_timing("Redirect to " . $response->header("location"));
         }
@@ -255,7 +256,7 @@ sub _do_timing {
 
     if ($self->{'last_timestamp'}){
         $diff = tv_interval($self->{'last_timestamp'}, $timestamp);
-    }    
+    }
 
     $self->{'last_timestamp'} = $timestamp;
 
@@ -287,13 +288,21 @@ sub _fetch_url {
     #--- because it won't send credentials until it gets challenged, so we set the creds
     #--- directly on the request
     if (defined $self->{'uid'} && defined $self->{'passwd'} && defined $self->{'realm'}){
-        $request->authorization_basic($self->{'uid'}, $self->{'passwd'}); 
+      # --- Is this a Shibboleth ECP realm?
+      if ($self->{'realm'} =~ m|^https://|){
+        $request->header('Accept' => '*/*; application/vnd.paos+xml');
+        $request->header('PAOS' => 'ver="urn:liberty:paos:2003-08";"urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp"');
+      }
+      else {
+        $request->authorization_basic($self->{'uid'}, $self->{'passwd'});
+      }
+
     }
 
-    if ($self->{"timing"}) { 
+    if ($self->{"timing"}) {
         $self->{'start_time'}     = [gettimeofday];
         $self->{'last_timestamp'} = undef;
-        print "Request is initiated...\n"; 
+        print "Request is initiated...\n";
     }
 
     my $timed_out = 0; #timeout check for $request
@@ -320,21 +329,21 @@ sub _fetch_url {
     if ($result->is_success){
 
         my $content = $result->content;
-        
+
         #--- We're at cosign
         if ($content =~ /<form action=\".*cosign-bin\/cosign\.cgi/mi){
 
             if ($self->{timing}) {
                 $self->_do_timing("Request is redirected to Cosign");
             }
-            
+
             my $form = HTML::Form->parse($content, $result->base());
-            
+
             if (!defined $form) {
                 $self->_set_error("Redirected to something I can't parse:\n" . $content . "\n");
                 return undef;
             }
-            
+
             #--- fill out login parameters
             $form->value("login",$username);
             $form->value("password",$passwd);
@@ -364,7 +373,7 @@ sub _fetch_url {
             #--- Got another 200 back
             if ($result2->is_success){
 
-                my $content2 = $result2->content;            
+                my $content2 = $result2->content;
 
                 #--- Are we back at Cosign? If so, we're unauthorized.
                 if ($content2 =~ /<form action=\".*cosign-bin\/cosign\.cgi\"/mi){
@@ -386,6 +395,114 @@ sub _fetch_url {
 
         }
         #--- We're not at cosign, this must be the final result.
+        elsif (defined($result->header('content-type')) && $result->header('content-type') eq 'application/vnd.paos+xml') {
+          if ($self->{timing}) {
+              $self->_do_timing("Request is requesting ECP login");
+          }
+          my $parser = XML::LibXML->new();
+          my $xml    = XML::LibXML::XPathContext->new();
+          $xml->registerNs('S' => 'http://schemas.xmlsoap.org/soap/envelope/');
+          $xml->registerNs('paos' => 'urn:liberty:paos:2003-08');
+          $xml->registerNs('ecp' => 'urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp');
+          $xml->registerNs('saml' => 'urn:oasis:names:tc:SAML:2.0:assertion');
+          $xml->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
+          my $doc;
+          # Conver ECP response to what we send to IdP
+          eval{$doc = $parser->parse_string($content);};
+          if ($@) {
+            $self->set_error("Unable to parse ECP XML: " . $@);
+            return undef;
+          }
+          my ($relaystate) = $xml->find('//S:Envelope/S:Header/ecp:RelayState', $doc)->[0];
+          my $responseconsumer = $xml->findvalue('//S:Envelope/S:Header/paos:Request/@responseConsumerURL', $doc);
+
+          $xml->find('//S:Envelope', $doc)->[0]->removeChild($xml->find('//S:Envelope/S:Header', $doc)->[0]);
+          # exit(0);
+          my $idpreq = HTTP::Request::Common::POST($self->{'realm'},
+                                                   Content_Type => 'text/xml',
+                                                   Content      => $doc->toStringC14N);
+          # Add basic auth to request
+          $idpreq->authorization_basic($self->{'uid'}, $self->{'passwd'});
+          # Launch request
+          local $SIG{ALRM} = sub {
+              #request2 timed out
+              $timed_out = 1;
+          };
+          if(defined $self->{'timeout'}){
+              alarm $self->{'timeout'};
+          }
+          else{
+              alarm 0;
+          }
+          my $idpres = $ua->request($idpreq);
+          alarm 0;
+          if($timed_out){
+              #request2 timed out----> alarm
+              $self->_set_error("Request timeout while authing to IdP.." . $idpreq->uri());
+              return undef;
+          }
+
+          $content = $idpres->content;
+          my $doc2;
+          eval{$doc2 = $parser->parse_string($content);};
+          if ($@) {
+            $self->set_error("Unable to parse IdP XML: " . $@);
+            return undef;
+          }
+          my $loginstatus = $xml->findvalue('//S:Envelope/S:Body/saml2p:Response/saml2p:Status/saml2p:StatusCode/@Value', $doc2);
+
+          if (!defined($loginstatus) || $loginstatus ne 'urn:oasis:names:tc:SAML:2.0:status:Success') {
+            $self->_set_error("Authentication failed.");
+            return undef;
+          }
+          # Check for Error
+
+          my $idpresponseconsumer = $xml->findvalue('//S:Envelope/S:Header/ecp:Response/@AssertionConsumerServiceURL', $doc2);
+          if ($idpresponseconsumer ne $responseconsumer) {
+            $self->_set_error("ACS from SP ($responseconsumer) does not match ACS from IdP ($idpresponseconsumer). Something bad happened.");
+            return undef;
+          }
+          my ($SOAPHeader) = $xml->find('//S:Envelope/S:Header', $doc2)->[0];
+
+          $SOAPHeader->removeChildNodes();
+          $SOAPHeader->appendChild($relaystate);
+
+          # Send back to SP
+          my $spreq = HTTP::Request::Common::POST($responseconsumer,
+                                                  Content_Type => 'application/vnd.paos+xml',
+                                                  Content      => $doc2->toStringC14N);
+          local $SIG{ALRM} = sub {
+              #request2 timed out
+              $timed_out = 1;
+          };
+          if(defined $self->{'timeout'}){
+              alarm $self->{'timeout'};
+          }
+          else{
+              alarm 0;
+          }
+          my $spres = $ua->request($spreq);
+          alarm 0;
+          if($timed_out){
+              #request2 timed out----> alarm
+              $self->_set_error("Request timeout while returning to SP.." . $idpreq->uri());
+              return undef;
+          }
+          if ($self->{timing}) {
+              $self->_do_timing("Returned to SP");
+          }
+          #--- Got another 200 back
+          if ($spres->is_success){
+
+              my $spcontent = $spres->content;
+
+              $self->{'content_type'} = $spres->header('content-type');
+              $self->{'headers'}      = $self->_parse_headers($spres);
+
+              return $spcontent;
+          }
+          # Return result data
+        }
         else {
             if ($self->{"timing"}) {
                 $self->_do_timing("Success");
@@ -402,11 +519,11 @@ sub _fetch_url {
         if ($self->{"timing"}) {
             $self->_do_timing("Failed");
         }
-        
+
         $self->_set_error("HTTP Error: " . $result->message . " : " . $request->uri());
         return undef;
     }
-    
+
 }
 
 #--- utility to extract all the header name/values from the response
@@ -447,7 +564,7 @@ sub AUTOLOAD {
     #---- ("3,3,3") : retry 3 times with 3 secs interval for each request
     if ( $retries > 0 ){
         $retry_string = join(",", ("$retry_interval") x $retries );
-        
+
         #set the number of retires with retry interval for each
         $self->{'ua'}->timing( $retry_string );
     }
@@ -455,7 +572,7 @@ sub AUTOLOAD {
         #if no retries, do not set retry interval
         $self->{'ua'}->timing("");
     }
-    
+
     #--- set up the parameters
     my $params = {
         @_
@@ -532,7 +649,7 @@ sub AUTOLOAD {
                 warn "attempting to retrieve: $base as $action request: ".Dumper($params);
             }
 
-            my $req;     
+            my $req;
 
             if ($action eq "POST") {
                 #--- ok this royally sucks we need to at some point further optimize this
@@ -541,20 +658,20 @@ sub AUTOLOAD {
                 $hack->uri($base."?method=help");
                 $hack->method("GET");
                 $self->_fetch_url($hack);
-                
+
                 my @arr;
-                
-                foreach my $key (@keys){            
+
+                foreach my $key (@keys){
                     next if (! $key);
 
                     my $val = $params->{$key};
-                    
+
                     # Since some arguments might come through as arrays (ie multiple values) and some as
                     # single values, treat everything as an array to simplify code
                     if (ref($val) ne 'ARRAY'){
                         $val = [$val];
                     }
-                    
+
                     foreach my $value (@$val){
 
                         # is this a special object?
@@ -592,12 +709,12 @@ sub AUTOLOAD {
                         # otherwise just push it onto the form data fields
                         else{
                             push(@arr, $key => $value);
-                        }              
+                        }
                     }
-                }       
+                }
 
                 # Make our request as a POST
-                $req = HTTP::Request::Common::POST($base,               
+                $req = HTTP::Request::Common::POST($base,
                                                    Content_Type => 'form-data',
                                                    Content      => \@arr);
             }
@@ -616,7 +733,7 @@ sub AUTOLOAD {
                 #--- HTTP::Cookies has this behavior but when we implemented our own save_cookies
                 #--- with flock support this behavior changed. This re-adds it using our mechanism
                 $self->save_cookies();
-                
+
                 #--- if user has asked for raw output, just return it exactly as we got it
                 #--- can't do error detection here
                 if ($self->{'raw_output'}) {
@@ -636,7 +753,7 @@ sub AUTOLOAD {
                     #--- detect an error flag set on the result
                     if (ref($str) eq "HASH" && $str->{'error'} && $self->{'error_callback'}){
                         &{$self->{'error_callback'}}($self, $res);
-                    }            
+                    }
 
                     return( $str );
                 }
@@ -793,7 +910,7 @@ sub new {
             $t0 = [gettimeofday];
             print "URL is not provided, start looking up the URL to be requested...\n";
         }
-        
+
         #first check to see if either name_services or service_cache_file
         if (defined($self->{'service_cache_file'})) {
             #--- load the client config
@@ -807,9 +924,9 @@ sub new {
                 $self->_set_error("Unable to find a usable URL for URN = " . $self->{'service_name'} . " in cache file \"" . $self->{'service_cache_file'} . "\"\n");
                 return $self;
             }
-            
+
             if ($self->{timing}) {
-                my $elapsed = tv_interval ($t0, [gettimeofday]); 
+                my $elapsed = tv_interval ($t0, [gettimeofday]);
                 print "Took $elapsed seconds to look up from the config file\n"
             }
         }
@@ -831,7 +948,7 @@ sub new {
         else {
             $self->_set_error("Unable to find a usable URL: Neither name_services or service_cache_file were specified\n");
         }
-        
+
         #ISSUE=3454
         if ($self->{timing}) {
             print "URLs:\n";
@@ -872,7 +989,7 @@ sub new {
     $self->{'ua'}->timeout($self->{'timeout'});
 
     #---- cookies to be automatically dealt with
-    $self->set_cookie_jar($self->{'cookieJar'});          
+    $self->set_cookie_jar($self->{'cookieJar'});
 
     #---- turn on auto redirects
     $self->{'ua'}->requests_redirectable(['GET', 'HEAD', 'POST', 'OPTIONS']);
@@ -944,13 +1061,13 @@ sub get_content_type {
 
 sub get_headers {
     my $self = shift;
-    
+
     return $self->{'headers'};
 }
 
 =head2 get_retries
 
-    Returns the number of retries 
+    Returns the number of retries
 
 =cut
 
@@ -986,7 +1103,7 @@ sub set_retries {
 
     my $self   = shift;
     my $retries = shift;
-    
+
     if( !defined $retries ){
         return undef;
     }
@@ -1006,7 +1123,7 @@ sub set_retry_interval {
 
     my $self   = shift;
     my $retry_interval = shift;
-    
+
     if( !defined $retry_interval ){
         return undef;
     }
@@ -1046,7 +1163,7 @@ sub set_timeout {
     $self->{'ua'}->timeout($timeout);
 }
 
-=head2 set_cookie_jar 
+=head2 set_cookie_jar
 
     Updates the cookie jar associated with the underlying LWP object. This can be passed a string representing
     a file on disk or an HTTP::Cookies object.
@@ -1076,19 +1193,19 @@ sub set_cookie_jar {
                 $self->_set_error("Couldn't share lock cookie file: $!");
                 return;
             }
-	}	
+	}
 
         my $cookie_jar = new HTTP::Cookies(
             file           => $new_cookies,
             autosave       => 0,
             ignore_discard => 1,
             );
-        
+
         if(! $cookie_jar) {
             $self->_set_error("Unable to create cookie jar: $!");
             return;
         }
-        
+
         $self->{'ua'}->cookie_jar($cookie_jar);
 
 	if ($fh){
@@ -1103,12 +1220,12 @@ sub set_cookie_jar {
             autosave       => 0,
             ignore_discard => 1,
             );
-        
+
         if(! $cookie_jar) {
             $self->_set_error("Unable to create cookie jar: $!");
             return;
         }
-        
+
         $self->{'ua'}->cookie_jar($cookie_jar);
     }
 
@@ -1139,7 +1256,7 @@ sub save_cookies {
             }
             close(FH);
 	}
-	
+
 	# open the file for read/write so that we don't clobber the contents before
 	# we have a chance to flock it
 	if (! open(FH, "+<", $cookie_path) ){
@@ -1150,9 +1267,9 @@ sub save_cookies {
 	if (! flock(FH, LOCK_EX) ){
             $self->_set_error("Failed to flock during save: $!");
             return;
-        } 
+        }
 
-	# Now that we have the filehandle exlusively locked we can 
+	# Now that we have the filehandle exlusively locked we can
 	# blow away the contents without fear that something will read it
 	# in the meantime
 	seek(FH, 0, 0);
@@ -1223,33 +1340,33 @@ sub set_service_identifier {
 
     # we might have been initialized without a service identifier in which case we wouldn't have
     # any service_urls loaded yet so try to load them if that's the case
-    if ($self->{'service_cache_file'}) 
+    if ($self->{'service_cache_file'})
     {
         if (! $self->_load_config()) {
             $self->_set_error("No service urls found and unable to load config.");
             return undef;
         }
-        
+
         # figure out what URLs to know about based on the passed in service identifier or bail
-        if (! $self->_setup_urls($self->{'service_name'})) 
+        if (! $self->_setup_urls($self->{'service_name'}))
         {
             $self->_set_error("Unable to find a usable URL for URN = " . $self->{'service_name'} . " in service cache file \"" . $self->{'service_cache_file'} . "\"\n");
             return undef;
         }
     }
-    elsif (defined($self->{'name_services'})) 
+    elsif (defined($self->{'name_services'}))
     {
         #get the NameService locations
         $self->_ns_service_lookup();
-        
-        if (! $self->_setup_urls($self->{'service_name'})) 
+
+        if (! $self->_setup_urls($self->{'service_name'}))
         {
             #-- no url provided and none resolved from service name
             $self->_set_error("Unable to find a usable URL for URN = " . $self->{'service_name'} . " in name services: " . Dumper($self->{'name_services'}) . "\n");
             return undef;
         }
     }
-    else 
+    else
     {
         $self->_set_error("Unable to find a usable URL: Neither name_services or service_cache_file were specified\n");
         return undef;
