@@ -336,194 +336,12 @@ sub _fetch_url {
 
         #--- We're at cosign
         if ($content =~ /<form action=\".*cosign-bin\/cosign\.cgi/mi){
-
-            if ($self->{timing}) {
-                $self->_do_timing("Request is redirected to Cosign");
-            }
-
-            my $form = HTML::Form->parse($content, $result->base());
-
-            if (!defined $form) {
-                $self->_set_error("Redirected to something I can't parse:\n" . $content . "\n");
-                return undef;
-            }
-
-            #--- fill out login parameters
-            $form->value("login",$username);
-            $form->value("password",$passwd);
-            my $request2 = $form->click;
-            local $SIG{ALRM} = sub {
-                #request2 timed out
-                $timed_out = 1;
-            };
-            if(defined $self->{'timeout'}){
-                alarm $self->{'timeout'};
-            }
-            else{
-                alarm 0;
-            }
-            #--- submit form
-            my $result2 = $ua->request($request2);
-            alarm 0;
-            if($timed_out){
-                #request2 timed out----> alarm
-                $self->_set_error("Request timeout while authing to cosign.." . $request2->uri());
-                return undef;
-            }
-            if ($self->{"timing"}) {
-                $self->_do_timing("Sent credentials to Cosign");
-            }
-
-            #--- Got another 200 back
-            if ($result2->is_success){
-
-                my $content2 = $result2->content;
-
-                #--- Are we back at Cosign? If so, we're unauthorized.
-                if ($content2 =~ /<form action=\".*cosign-bin\/cosign\.cgi\"/mi){
-                    $self->_set_error( "Error: Authorization failed for: " . $request->uri());
-                    return undef;
-                }
-
-                #--- Otherwise we're good, return content
-                $self->{'content_type'} = $result2->header('content-type');
-                $self->{'headers'}      = $self->_parse_headers($result2);
-
-                return $content2;
-            }
-            else {
-                #--- Something went wrong in getting the final url after cosign auth succeeded
-                $self->_set_error("HTTP Error after logging into Cosign: " . $result2->message);
-                return undef;
-            }
+          return $self->_do_cosign_login($request, $content, $result);
 
         }
-        #---
+        #--- We're at Shib ECP
         elsif (defined($result->header('content-type')) && $result->header('content-type') eq CONTENT_PAOS) {
-          if ($self->{timing}) {
-              $self->_do_timing("Request is requesting ECP login");
-          }
-          my $doc;
-          # Conver ECP response to what we send to IdP
-          eval{$doc = $self->{'xmlparser'}->parse_string($content);};
-          if ($@) {
-            $self->set_error("Unable to parse ECP XML: " . $@);
-            return undef;
-          }
-
-          my @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header/ecp:RelayState', $doc);
-          if (!(scalar @tmp == 1)) {
-            $self->set_error("Unable to find RelayState");
-            return undef;
-          }
-          my $relaystate = $tmp[0];
-
-          my $responseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/paos:Request/@responseConsumerURL', $doc);
-
-          @tmp = $self->{'xpath'}->findnodes('//S:Envelope', $doc);
-          if (!(scalar @tmp == 1)) {
-            $self->set_error("Unable to find Envelope");
-            return undef;
-          }
-          my $envelope = $tmp[0];
-          @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc);
-          if (!(scalar @tmp == 1)) {
-            $self->set_error("Unable to find Header");
-            return undef;
-          }
-          my $header = $tmp[0];
-          $envelope->removeChild($header);
-
-          my $idpreq = HTTP::Request::Common::POST($self->{'realm'},
-                                                   Content_Type => 'text/xml',
-                                                   Content      => $doc->toStringC14N);
-          # Add basic auth to request
-          $idpreq->authorization_basic($self->{'uid'}, $self->{'passwd'});
-          # Launch request
-          local $SIG{ALRM} = sub {
-              #request2 timed out
-              $timed_out = 1;
-          };
-          if(defined $self->{'timeout'}){
-              alarm $self->{'timeout'};
-          }
-          else{
-              alarm 0;
-          }
-          my $idpres = $ua->request($idpreq);
-          alarm 0;
-          if($timed_out){
-              #request2 timed out----> alarm
-              $self->_set_error("Request timeout while authing to IdP.." . $idpreq->uri());
-              return undef;
-          }
-
-          $content = $idpres->content;
-          my $doc2;
-          eval{$doc2 = $self->{'xmlparser'}->parse_string($content);};
-          if ($@) {
-            $self->set_error("Unable to parse IdP XML: " . $@);
-            return undef;
-          }
-
-          my $loginstatus = $self->{'xpath'}->findvalue('//S:Envelope/S:Body/saml2p:Response/saml2p:Status/saml2p:StatusCode/@Value', $doc2);
-
-          if (!defined($loginstatus) || $loginstatus ne 'urn:oasis:names:tc:SAML:2.0:status:Success') {
-            $self->_set_error("Authentication failed.");
-            return undef;
-          }
-          # Check for Error
-
-          my $idpresponseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/ecp:Response/@AssertionConsumerServiceURL', $doc2);
-          if ($idpresponseconsumer ne $responseconsumer) {
-            $self->_set_error("ACS from SP ($responseconsumer) does not match ACS from IdP ($idpresponseconsumer). Something bad happened.");
-            return undef;
-          }
-          @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc2);
-          if (!(scalar @tmp == 1)) {
-            $self->set_error("Unable to find Header");
-            return undef;
-          }
-          my $SOAPHeader = $tmp[0];
-
-          $SOAPHeader->removeChildNodes();
-          $SOAPHeader->appendChild($relaystate);
-
-          # Send back to SP
-          my $spreq = HTTP::Request::Common::POST($responseconsumer,
-                                                  Content_Type => CONTENT_PAOS,
-                                                  Content      => $doc2->toStringC14N);
-          local $SIG{ALRM} = sub {
-              #request2 timed out
-              $timed_out = 1;
-          };
-          if(defined $self->{'timeout'}){
-              alarm $self->{'timeout'};
-          }
-          else{
-              alarm 0;
-          }
-          my $spres = $ua->request($spreq);
-          alarm 0;
-          if($timed_out){
-              #request2 timed out----> alarm
-              $self->_set_error("Request timeout while returning to SP.." . $idpreq->uri());
-              return undef;
-          }
-          if ($self->{timing}) {
-              $self->_do_timing("Returned to SP");
-          }
-          #--- Got another 200 back
-          if ($spres->is_success){
-
-              my $spcontent = $spres->content;
-
-              $self->{'content_type'} = $spres->header('content-type');
-              $self->{'headers'}      = $self->_parse_headers($spres);
-
-              return $spcontent;
-          }
-          # Return result data
+          return $self->_do_ecp_login($request, $content);
         }
         #--- We're not at cosign or doing ECP login, this must be the final result.
         else {
@@ -547,6 +365,219 @@ sub _fetch_url {
         return undef;
     }
 
+}
+
+sub _do_cosign_login {
+    my $self      = shift;
+    my $request   = shift;
+    my $content   = shift;
+    my $result    = shift;
+    my $username  = $self->{'uid'};
+    my $passwd    = $self->{'passwd'};
+    my $ua        = $self->{'ua'};
+    my $timed_out = 0;
+
+    if ($self->{timing}) {
+        $self->_do_timing("Request is redirected to Cosign");
+    }
+
+    my $form = HTML::Form->parse($content, $result->base());
+
+    if (!defined $form) {
+        $self->_set_error("Redirected to something I can't parse:\n" . $content . "\n");
+        return undef;
+    }
+
+    #--- fill out login parameters
+    $form->value("login",$username);
+    $form->value("password",$passwd);
+    my $request2 = $form->click;
+    local $SIG{ALRM} = sub {
+        #request2 timed out
+        $timed_out = 1;
+    };
+    if(defined $self->{'timeout'}){
+        alarm $self->{'timeout'};
+    }
+    else{
+        alarm 0;
+    }
+    #--- submit form
+    my $result2 = $ua->request($request2);
+    alarm 0;
+    if($timed_out){
+        #request2 timed out----> alarm
+        $self->_set_error("Request timeout while authing to cosign.." . $request2->uri());
+        return undef;
+    }
+    if ($self->{"timing"}) {
+        $self->_do_timing("Sent credentials to Cosign");
+    }
+
+    #--- Got another 200 back
+    if ($result2->is_success){
+
+        my $content2 = $result2->content;
+
+        #--- Are we back at Cosign? If so, we're unauthorized.
+        if ($content2 =~ /<form action=\".*cosign-bin\/cosign\.cgi\"/mi){
+            $self->_set_error( "Error: Authorization failed for: " . $request->uri());
+            return undef;
+        }
+
+        #--- Otherwise we're good, return content
+        $self->{'content_type'} = $result2->header('content-type');
+        $self->{'headers'}      = $self->_parse_headers($result2);
+
+        return $content2;
+    }
+    else {
+        #--- Something went wrong in getting the final url after cosign auth succeeded
+        $self->_set_error("HTTP Error after logging into Cosign: " . $result2->message);
+        return undef;
+    }
+}
+
+#-- helper for handling Shib ECP login
+sub _do_ecp_login {
+    my $self    = shift;
+    my $request = shift;
+    my $content = shift;
+
+    my $ua        = $self->{'ua'};
+    my $timed_out = 0;
+
+    if ($self->{timing}) {
+        $self->_do_timing("Request is wanting ECP login");
+    }
+    my $doc;
+    # Convert ECP response to what we send to IdP
+    eval{$doc = $self->{'xmlparser'}->parse_string($content);};
+    if ($@) {
+        $self->set_error("Unable to parse ECP XML: " . $@);
+        return undef;
+    }
+
+    my @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header/ecp:RelayState', $doc);
+    if (!(scalar @tmp == 1)) {
+        $self->set_error("Unable to find RelayState");
+        return undef;
+    }
+    my $relaystate = $tmp[0];
+
+    my $responseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/paos:Request/@responseConsumerURL', $doc);
+
+    @tmp = $self->{'xpath'}->findnodes('//S:Envelope', $doc);
+    if (!(scalar @tmp == 1)) {
+        $self->set_error("Unable to find Envelope");
+        return undef;
+    }
+    my $envelope = $tmp[0];
+    @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc);
+    if (!(scalar @tmp == 1)) {
+        $self->set_error("Unable to find Header");
+        return undef;
+    }
+    my $header = $tmp[0];
+    $envelope->removeChild($header);
+
+    my $idpreq = HTTP::Request::Common::POST($self->{'realm'},
+        Content_Type => 'text/xml',
+        Content      => $doc->toStringC14N);
+    # Add basic auth to request
+    $idpreq->authorization_basic($self->{'uid'}, $self->{'passwd'});
+    # Launch request
+    local $SIG{ALRM} = sub {
+        #request2 timed out
+        $timed_out = 1;
+    };
+    if(defined $self->{'timeout'}){
+        alarm $self->{'timeout'};
+    }
+    else{
+        alarm 0;
+    }
+    my $idpres = $ua->request($idpreq);
+    alarm 0;
+    if($timed_out){
+        #request2 timed out----> alarm
+        $self->_set_error("Request timeout while authing to IdP.." . $idpreq->uri());
+        return undef;
+    }
+
+    $content = $idpres->content;
+    my $doc2;
+    eval{$doc2 = $self->{'xmlparser'}->parse_string($content);};
+    if ($@) {
+        $self->set_error("Unable to parse IdP XML: " . $@);
+        return undef;
+    }
+
+    my $loginstatus = $self->{'xpath'}->findvalue('//S:Envelope/S:Body/saml2p:Response/saml2p:Status/saml2p:StatusCode/@Value', $doc2);
+
+    if (!defined($loginstatus) || $loginstatus ne 'urn:oasis:names:tc:SAML:2.0:status:Success') {
+        $self->_set_error("Authentication failed.");
+        return undef;
+    }
+    # Check for Error
+
+    my $idpresponseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/ecp:Response/@AssertionConsumerServiceURL', $doc2);
+    if ($idpresponseconsumer ne $responseconsumer) {
+        $self->_set_error("ACS from SP ($responseconsumer) does not match ACS from IdP ($idpresponseconsumer). Something bad happened.");
+        return undef;
+    }
+    @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc2);
+    if (!(scalar @tmp == 1)) {
+        $self->set_error("Unable to find Header");
+        return undef;
+    }
+    my $SOAPHeader = $tmp[0];
+
+    $SOAPHeader->removeChildNodes();
+    $SOAPHeader->appendChild($relaystate);
+
+    # Send back to SP
+    my $spreq = HTTP::Request::Common::POST($responseconsumer,
+        Content_Type => CONTENT_PAOS,
+        Content      => $doc2->toStringC14N);
+    local $SIG{ALRM} = sub {
+        #request2 timed out
+        $timed_out = 1;
+    };
+    if(defined $self->{'timeout'}){
+        alarm $self->{'timeout'};
+    }
+    else{
+        alarm 0;
+    }
+    my $spres = $ua->request($spreq);
+    alarm 0;
+    if($timed_out){
+        #request2 timed out----> alarm
+        $self->_set_error("Request timeout while returning to SP.." . $idpreq->uri());
+        return undef;
+    }
+    if ($self->{timing}) {
+        $self->_do_timing("Returned to SP");
+    }
+    #--- Got another 200 back
+    if ($spres->is_success){
+
+        my $spcontent = $spres->content;
+
+        $self->{'content_type'} = $spres->header('content-type');
+        $self->{'headers'}      = $self->_parse_headers($spres);
+
+        return $spcontent;
+    }
+    else {
+        if ($self->{"timing"}) {
+            $self->_do_timing("Failed");
+        }
+
+        $self->_set_error("HTTP Error: " . $spres->message . " : " . $request->uri());
+        return undef;
+    }
 }
 
 #--- utility to extract all the header name/values from the response
