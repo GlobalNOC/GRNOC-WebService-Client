@@ -33,6 +33,8 @@ $HTTP::Request::Common::DYNAMIC_FILE_UPLOAD = 1;
 our $VERSION = '1.4.1';
 
 use constant DEFAULT_LIMIT => 1000;
+use constant CONTENT_PAOS => 'application/vnd.paos+xml';
+use constant PAOS_HEADER => 'ver="urn:liberty:paos:2003-08";"urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp"';
 
 =head1 NAME
 
@@ -290,10 +292,12 @@ sub _fetch_url {
     if (defined $self->{'uid'} && defined $self->{'passwd'} && defined $self->{'realm'}){
       # --- Is this a Shibboleth ECP realm?
       if ($self->{'realm'} =~ m|^https://|){
-        $request->header('Accept' => '*/*; application/vnd.paos+xml');
-        $request->header('PAOS' => 'ver="urn:liberty:paos:2003-08";"urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp"');
+        # Then set PAOS accept/header to tell SP we want to ECP
+        $request->header('Accept' => "*/*; @{[CONTENT_PAOS]}");
+        $request->header('PAOS' => PAOS_HEADER);
       }
       else {
+        # Otherwise do basic auth
         $request->authorization_basic($self->{'uid'}, $self->{'passwd'});
       }
 
@@ -394,30 +398,42 @@ sub _fetch_url {
             }
 
         }
-        #--- We're not at cosign, this must be the final result.
-        elsif (defined($result->header('content-type')) && $result->header('content-type') eq 'application/vnd.paos+xml') {
+        #---
+        elsif (defined($result->header('content-type')) && $result->header('content-type') eq CONTENT_PAOS) {
           if ($self->{timing}) {
               $self->_do_timing("Request is requesting ECP login");
           }
-          my $parser = XML::LibXML->new();
-          my $xml    = XML::LibXML::XPathContext->new();
-          $xml->registerNs('S' => 'http://schemas.xmlsoap.org/soap/envelope/');
-          $xml->registerNs('paos' => 'urn:liberty:paos:2003-08');
-          $xml->registerNs('ecp' => 'urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp');
-          $xml->registerNs('saml' => 'urn:oasis:names:tc:SAML:2.0:assertion');
-          $xml->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
           my $doc;
           # Conver ECP response to what we send to IdP
-          eval{$doc = $parser->parse_string($content);};
+          eval{$doc = $self->{'xmlparser'}->parse_string($content);};
           if ($@) {
             $self->set_error("Unable to parse ECP XML: " . $@);
             return undef;
           }
-          my ($relaystate) = $xml->find('//S:Envelope/S:Header/ecp:RelayState', $doc)->[0];
-          my $responseconsumer = $xml->findvalue('//S:Envelope/S:Header/paos:Request/@responseConsumerURL', $doc);
 
-          $xml->find('//S:Envelope', $doc)->[0]->removeChild($xml->find('//S:Envelope/S:Header', $doc)->[0]);
-          # exit(0);
+          my @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header/ecp:RelayState', $doc);
+          if (!(scalar @tmp == 1)) {
+            $self->set_error("Unable to find RelayState");
+            return undef;
+          }
+          my $relaystate = $tmp[0];
+
+          my $responseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/paos:Request/@responseConsumerURL', $doc);
+
+          @tmp = $self->{'xpath'}->findnodes('//S:Envelope', $doc);
+          if (!(scalar @tmp == 1)) {
+            $self->set_error("Unable to find Envelope");
+            return undef;
+          }
+          my $envelope = $tmp[0];
+          @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc);
+          if (!(scalar @tmp == 1)) {
+            $self->set_error("Unable to find Header");
+            return undef;
+          }
+          my $header = $tmp[0];
+          $envelope->removeChild($header);
+
           my $idpreq = HTTP::Request::Common::POST($self->{'realm'},
                                                    Content_Type => 'text/xml',
                                                    Content      => $doc->toStringC14N);
@@ -444,12 +460,13 @@ sub _fetch_url {
 
           $content = $idpres->content;
           my $doc2;
-          eval{$doc2 = $parser->parse_string($content);};
+          eval{$doc2 = $self->{'xmlparser'}->parse_string($content);};
           if ($@) {
             $self->set_error("Unable to parse IdP XML: " . $@);
             return undef;
           }
-          my $loginstatus = $xml->findvalue('//S:Envelope/S:Body/saml2p:Response/saml2p:Status/saml2p:StatusCode/@Value', $doc2);
+
+          my $loginstatus = $self->{'xpath'}->findvalue('//S:Envelope/S:Body/saml2p:Response/saml2p:Status/saml2p:StatusCode/@Value', $doc2);
 
           if (!defined($loginstatus) || $loginstatus ne 'urn:oasis:names:tc:SAML:2.0:status:Success') {
             $self->_set_error("Authentication failed.");
@@ -457,19 +474,24 @@ sub _fetch_url {
           }
           # Check for Error
 
-          my $idpresponseconsumer = $xml->findvalue('//S:Envelope/S:Header/ecp:Response/@AssertionConsumerServiceURL', $doc2);
+          my $idpresponseconsumer = $self->{'xpath'}->findvalue('//S:Envelope/S:Header/ecp:Response/@AssertionConsumerServiceURL', $doc2);
           if ($idpresponseconsumer ne $responseconsumer) {
             $self->_set_error("ACS from SP ($responseconsumer) does not match ACS from IdP ($idpresponseconsumer). Something bad happened.");
             return undef;
           }
-          my ($SOAPHeader) = $xml->find('//S:Envelope/S:Header', $doc2)->[0];
+          @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc2);
+          if (!(scalar @tmp == 1)) {
+            $self->set_error("Unable to find Header");
+            return undef;
+          }
+          my $SOAPHeader = $tmp[0];
 
           $SOAPHeader->removeChildNodes();
           $SOAPHeader->appendChild($relaystate);
 
           # Send back to SP
           my $spreq = HTTP::Request::Common::POST($responseconsumer,
-                                                  Content_Type => 'application/vnd.paos+xml',
+                                                  Content_Type => CONTENT_PAOS,
                                                   Content      => $doc2->toStringC14N);
           local $SIG{ALRM} = sub {
               #request2 timed out
@@ -503,6 +525,7 @@ sub _fetch_url {
           }
           # Return result data
         }
+        #--- We're not at cosign or doing ECP login, this must be the final result.
         else {
             if ($self->{"timing"}) {
                 $self->_do_timing("Success");
@@ -1016,6 +1039,15 @@ sub new {
     #set the retry http error codes
     my $retry_codes = dclone $self->{'retry_error_codes'};
     $self->{'ua'}->codes_to_determinate( $retry_codes );
+
+    # XML processors for ECP
+    $self->{'xmlparser'} = XML::LibXML->new();
+    $self->{'xpath'} = XML::LibXML::XPathContext->new();
+    $self->{'xpath'}->registerNs('S' => 'http://schemas.xmlsoap.org/soap/envelope/');
+    $self->{'xpath'}->registerNs('paos' => 'urn:liberty:paos:2003-08');
+    $self->{'xpath'}->registerNs('ecp' => 'urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp');
+    $self->{'xpath'}->registerNs('saml' => 'urn:oasis:names:tc:SAML:2.0:assertion');
+    $self->{'xpath'}->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
 
     return $self;
 }
