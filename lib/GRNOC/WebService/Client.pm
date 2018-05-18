@@ -135,28 +135,34 @@ sub _setup_urls {
     return $count;
 }
 
+#--- loads the default realm from the config file
 sub _load_default_realm {
     
     my $self =  shift;
     
     my $config_file = $self->{'config_file'};
+    my $username    = $self->{'uid'};
 
     #--- get the config
     my $config = GRNOC::Config->new(config_file => $config_file,
-                                    force_array => 0);
+                                    force_array => 1);
 
     if (!defined $config) {
         $self->_set_error("unable to open $config_file: $!\n");
         return;
     }
     
-    my $realm = $config->get("/config/realm");
+    my $user_realm_mappings = $config->get('/config/match');
     
-    if( defined( $realm ) ) {
-        $self->{'default_realm'} = $realm;
-        return 1;
+    foreach my $user_realm_mapping ( @$user_realm_mappings ) {
+        
+        if( $username =~ $user_realm_mapping->{'regex'} ){
+            $self->{'default_realm'} = $user_realm_mapping->{'realm'};
+            last;
+        }
     }
 
+    return 1;
 }
 
 
@@ -1116,7 +1122,7 @@ sub new {
     $self->{'xpath'}->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
 
     #load the default realm from config file             
-    $self->_load_default_realm();
+    $self->_load_default_realm() if( -e $self->{'config_file'} );
 
     return $self;
 }
