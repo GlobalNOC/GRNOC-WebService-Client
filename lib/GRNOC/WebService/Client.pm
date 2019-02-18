@@ -1509,6 +1509,7 @@ sub set_credentials {
     $self->{'realm'}  = $args{'realm'} if ($args{'realm'});
     $self->{'passwd'} = $args{'passwd'} if ($args{'passwd'});
 
+    $self->_load_default_realm();
     return 1;
 }
 
