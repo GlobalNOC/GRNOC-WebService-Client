@@ -1122,7 +1122,7 @@ sub new {
     $self->{'xpath'}->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
 
     #load the default realm from config file             
-    $self->_load_default_realm() if( -e $self->{'config_file'} );
+    $self->_load_default_realm() if( !defined($self->{'realm'}) && defined($self->{'uid'}) && -e $self->{'config_file'} );
 
     return $self;
 }
