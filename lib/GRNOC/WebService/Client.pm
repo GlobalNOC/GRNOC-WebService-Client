@@ -315,6 +315,9 @@ sub _fetch_url {
     my $cookieJar   = $self->{'cookieJar'};
     my $ua          = $self->{'ua'};
 
+    #load the default realm from config file
+    $self->_load_default_realm() if( !defined($realm) && defined($username) && -e $self->{'config_file'} );
+
     #--- if we did not pass realm explicitly
     #--- use realm from the config file
     if( !defined( $self->{'realm'} )) {
@@ -1120,9 +1123,6 @@ sub new {
     $self->{'xpath'}->registerNs('ecp' => 'urn:oasis:names:tc:SAML:2.0:profiles:SSO:ecp');
     $self->{'xpath'}->registerNs('saml' => 'urn:oasis:names:tc:SAML:2.0:assertion');
     $self->{'xpath'}->registerNs('saml2p' => 'urn:oasis:names:tc:SAML:2.0:protocol');
-
-    #load the default realm from config file             
-    $self->_load_default_realm() if( -e $self->{'config_file'} );
 
     return $self;
 }
