@@ -493,13 +493,13 @@ sub _do_ecp_login {
     # Convert ECP response to what we send to IdP
     eval{$doc = $self->{'xmlparser'}->parse_string($content);};
     if ($@) {
-        $self->set_error("Unable to parse ECP XML: " . $@);
+        $self->_set_error("Unable to parse ECP XML: " . $@);
         return undef;
     }
 
     my @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header/ecp:RelayState', $doc);
     if (!(scalar @tmp == 1)) {
-        $self->set_error("Unable to find RelayState");
+        $self->_set_error("Unable to find RelayState");
         return undef;
     }
     my $relaystate = $tmp[0];
@@ -508,13 +508,13 @@ sub _do_ecp_login {
 
     @tmp = $self->{'xpath'}->findnodes('//S:Envelope', $doc);
     if (!(scalar @tmp == 1)) {
-        $self->set_error("Unable to find Envelope");
+        $self->_set_error("Unable to find Envelope");
         return undef;
     }
     my $envelope = $tmp[0];
     @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc);
     if (!(scalar @tmp == 1)) {
-        $self->set_error("Unable to find Header");
+        $self->_set_error("Unable to find Header");
         return undef;
     }
     my $header = $tmp[0];
@@ -548,7 +548,7 @@ sub _do_ecp_login {
     my $doc2;
     eval{$doc2 = $self->{'xmlparser'}->parse_string($content);};
     if ($@) {
-        $self->set_error("Unable to parse IdP XML: " . $@);
+        $self->_set_error("Unable to parse IdP XML: " . $@);
         return undef;
     }
 
@@ -567,7 +567,7 @@ sub _do_ecp_login {
     }
     @tmp = $self->{'xpath'}->findnodes('//S:Envelope/S:Header', $doc2);
     if (!(scalar @tmp == 1)) {
-        $self->set_error("Unable to find Header");
+        $self->_set_error("Unable to find Header");
         return undef;
     }
     my $SOAPHeader = $tmp[0];
