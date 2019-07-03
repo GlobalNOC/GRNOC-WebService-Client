@@ -11,6 +11,7 @@ my $realm;
 
 #pick realm from the config file
 my $svc = GRNOC::WebService::Client->new( url => "http://localhost:8529/test.cgi",      
+                                          uid => "foo",
                                            config_file => $config_file );
                                             
 ok(defined $svc ,"Creating new Client");
