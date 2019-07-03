@@ -1,3 +1,10 @@
+GRNOC::WebService::Client v1.5.2 -- Wed Jul 3 2019
+===================================================
+
+Bug Fixes:
+ * SCTASK0033922 Need to set a uid in GRNOC-WebService-Client realm.t
+ * SCTASK0022617 Fix WSC warning
+
 GRNOC::WebService::Client v1.5.1 -- Thu Apr 26 2018
 ===================================================
 
