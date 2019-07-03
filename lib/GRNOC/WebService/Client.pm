@@ -30,7 +30,7 @@ use XML::LibXML;
 
 $HTTP::Request::Common::DYNAMIC_FILE_UPLOAD = 1;
 
-our $VERSION = '1.5.1';
+our $VERSION = '1.5.2';
 
 use constant DEFAULT_LIMIT => 1000;
 use constant CONTENT_PAOS => 'application/vnd.paos+xml';
