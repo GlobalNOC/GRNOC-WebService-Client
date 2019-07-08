@@ -855,7 +855,17 @@ sub AUTOLOAD {
                 }
                 else
                 {
-                    $self->_set_error($@);
+
+		    # Try to do some error pretty-fication here for ease of understanding
+		    # If we're back at some webpage, it means that login failed for some reason
+		    # not caught earlier, do a catch all to make error prettier
+		    # This section is only used when expecting JSON based responses
+		    my $base_error = $@;
+		    if ($res =~ /<html/){
+			$base_error = "Unable to get JSON response from $base, possibly authentication/realm issues";
+		    }
+
+                    $self->_set_error($base_error);
                 }
             }
         }
