@@ -15,11 +15,11 @@ ok(defined $svc ,"Creating new Client");
 
 my $results = $svc->help();
 
-ok(! defined $results, "Did'nt get back an answer.");
+ok(! defined $results, "Didn't get back an answer.");
 
 my $error = $svc->get_error();
 
-ok($error =~ m/malformed JSON string/, "Got back the error.");
+ok($error =~ m/Unable to get JSON response|malformed JSON string/, "Got back the error.");
 
 ok(defined $svc ,"Client did not crash.");
 
