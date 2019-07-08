@@ -1,3 +1,11 @@
+GRNOC::WebService::Client v1.5.3 -- Mon Jul 8 2019
+===================================================
+
+Features:
+ * Adding a catchall check for landing back at a webpage when expecting a JSON
+   response along with some hints. This probably doesn't cover every case but
+   it should handle some common ones we run into.
+
 GRNOC::WebService::Client v1.5.2 -- Wed Jul 3 2019
 ===================================================
 
