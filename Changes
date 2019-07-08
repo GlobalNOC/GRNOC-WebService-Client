@@ -6,6 +6,9 @@ Features:
    response along with some hints. This probably doesn't cover every case but
    it should handle some common ones we run into.
 
+Bug Fixes:
+ * SCTASK0034020 fix typo and add the new error message 
+
 GRNOC::WebService::Client v1.5.2 -- Wed Jul 3 2019
 ===================================================
 
