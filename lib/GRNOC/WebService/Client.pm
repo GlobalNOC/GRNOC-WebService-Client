@@ -11,6 +11,7 @@ package GRNOC::WebService::Client;
 use strict;
 use warnings;
 
+use lib '/opt/grnoc/venv/GRNOC-WebService-Client/lib/perl5';
 use GRNOC::WebService::Client::Paginator;
 use HTTP::Cookies;
 use HTML::Form;
@@ -30,7 +31,7 @@ use XML::LibXML;
 
 $HTTP::Request::Common::DYNAMIC_FILE_UPLOAD = 1;
 
-our $VERSION = '1.5.3';
+our $VERSION = '1.5.4';
 
 use constant DEFAULT_LIMIT => 1000;
 use constant CONTENT_PAOS => 'application/vnd.paos+xml';

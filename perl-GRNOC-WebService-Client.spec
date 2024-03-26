@@ -1,5 +1,8 @@
+%global debug_package %{nil} # Don't generate debug info
+%define perl_lib /opt/grnoc/venv/
+%define specfile_deps %(cat cpanfile | sed -r 's/^requires ([^[:space:]]*)/Requires: perl(\\1)/' | sed 's/["'"'"';]//g')
 Name:           perl-GRNOC-WebService-Client
-Version:        1.5.3
+Version:        1.5.4
 Release:        1%{?dist}
 Summary:        GRNOC::WebService::Client Perl module
 License:        GRNOC
@@ -7,23 +10,21 @@ Group:          Development/Libraries
 URL:            http://globalnoc.iu.edu
 Source0:        GRNOC-WebService-Client-%{version}.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
-BuildArch:      noarch
-BuildRequires:  mod_perl
-BuildRequires:  httpd-devel
-BuildRequires:  ImageMagick-perl
-BuildRequires:  perl-GRNOC-WebService >= 1.2.5
-BuildRequires:  mod_perl-devel
-BuildRequires:  perl-Devel-Cover
+%if 0%{rhel} == 8
+BuildArch: x86_64
+%else
+BuildArch: noarch
+%endif
 Requires:       perl >= 5.8.8
+%if 0%{?rhel} == 7
+%{specfile_deps}
+%endif
+BuildRequires:  mod_perl
+BuildRequires:  mod_perl-devel
+BuildRequires:  httpd-devel
+BuildRequires:  ImageMagick-devel
+BuildRequires:  perl-GRNOC-WebService >= 1.2.5
 Requires:       perl-GRNOC-Config >= 1.0.7
-Requires:       perl-JSON >= 2.0
-Requires:       perl-JSON-XS >= 2.0
-Requires:       perl-LWP-UserAgent-Determined
-Requires:       perl-libwww-perl
-Requires:       perl-IO-Socket-SSL
-Requires:       perl-File-MMagic
-Requires:       perl-XML-XPath
-Requires:       perl-XML-LibXML
 
 %if 0%{?el7}
 Requires:       perl-LWP-Protocol-https
@@ -40,7 +41,10 @@ WebService Client Module
 make dist
 
 %install
-rm -rf $RPM_BUILD_ROOT
+%if 0%{rhel} == 8
+%{__install} -d -p %{buildroot}%{perl_lib}%{name}/lib/perl5
+cp -r venv/lib/perl5/* -t %{buildroot}%{perl_lib}%{name}/lib/perl5
+%endif
 
 %{__install} -d -p %{buildroot}%{perl_sitelib}/GRNOC/WebService/
 %{__install} -d -p %{buildroot}%{perl_sitelib}/GRNOC/WebService/Client/
@@ -63,6 +67,9 @@ if [ ! -e /usr/bin/wsutil ]
 fi
 
 %files
+%if %{rhel} == 8
+%{perl_lib}/%{name}/lib/perl5/*
+%endif
 %defattr(-,root,root,-)
 %{perl_sitelib}/GRNOC/WebService/Client.pm
 %{perl_sitelib}/GRNOC/WebService/Client/Paginator.pm
