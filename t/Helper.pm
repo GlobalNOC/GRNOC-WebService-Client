@@ -2,7 +2,6 @@
 
 use strict;
 use warnings;
-use lib '/opt/grnoc/venv/GRNOC-WebService-Client/lib/perl5';
 use FindBin;
 use Data::Dumper;
 use JSON;

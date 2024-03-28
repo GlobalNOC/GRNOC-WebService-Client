@@ -15,7 +15,6 @@ package GRNOC::WebService::Client::Paginator;
 use strict;
 use warnings;
 
-use lib '/opt/grnoc/venv/GRNOC-WebService-Client/lib/perl5';
 use Data::Dumper;
 
 =head1 NAME
