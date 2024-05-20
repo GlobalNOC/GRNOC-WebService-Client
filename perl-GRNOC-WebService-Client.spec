@@ -25,7 +25,7 @@ Requires:       perl-File-MMagic
 Requires:       perl-XML-XPath
 Requires:       perl-XML-LibXML
 
-%if 0%{?el7}
+%if "%rhel" >= "7"
 Requires:       perl-LWP-Protocol-https
 %endif
 
