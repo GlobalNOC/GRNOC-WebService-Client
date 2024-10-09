@@ -29,6 +29,8 @@ Requires:       perl-XML-LibXML
 Requires:       perl-LWP-Protocol-https
 %endif
 
+Provides: perl(GRNOC::WebService::Client) = %{version}
+
 %description
 WebService Client Module
 
